@@ -16,6 +16,19 @@ COMMON_DATE_FORMATS = [
     "%Y-%m-%d",              # 2025-10-24
 ]
 
+st.set_page_config(page_title="BetaCode AI", page_icon="🤖", layout="wide")
+
+# Hide Streamlit default menu and footer
+hide_st_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+"""
+st.markdown(hide_st_style, unsafe_allow_html=True)
+
+
 def parse_datetime_col(df, col):
     """
     Robustly parse df[col] into datetimes.
