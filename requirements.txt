@@ -5,3 +5,4 @@ matplotlib>=3.7
 altair>=5.2
 openpyxl>=3.0.0
 pyarrow>=11.0.0
+python-dotenv
