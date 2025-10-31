@@ -631,7 +631,7 @@ if st.session_state.get("analyse_clicked"):
         uploaded = None  
         
         AUTH_ID = st.session_state["auth_id"]
-        api_url = "https://pdhanewala.com:9002/apis/sharepoint/contactDataGet"  # ✅ no query param
+        api_url = "https://pdhanewala.com:9001/apis/sharepoint/contactDataGet"  # ✅ no query param
 
         # ✅ Send POST with JSON body
         payload = {"AUTH_ID": AUTH_ID,"PAGE_NUMBER":-1}
