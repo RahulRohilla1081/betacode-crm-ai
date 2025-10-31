@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <system.webServer>
+    <webSocket enabled="true" />
+    <rewrite>
+      <rules>
+        
+<rule name="RestrictAccessToAbcd" stopProcessing="true">
+  <match url=".*" />
+  <conditions logicalGrouping="MatchAll">
+    <!-- Allow static files (woff2, js, css, etc.) and websocket paths -->
+    <add input="{URL}" pattern="^/(static/|_stcore/|stream|favicon\.ico)" negate="true" />
+    <!-- Block if Referer is not from allowed domain -->
+    <add input="{HTTP_REFERER}" pattern="^https://cms\.betacodeinfotech\.com" negate="true" />
+  </conditions>
+  <action type="CustomResponse" statusCode="403" subStatusCode="0"
+          statusReason="Forbidden"
+          statusDescription="Access restricted" />
+</rule>
+        <!-- Existing reverse proxy rule -->
+        <rule name="ReverseProxyInboundRule" stopProcessing="true">
+          <match url="(.*)" />
+          <action type="Rewrite" url="http://127.0.0.1:8501/{R:1}" logRewrittenUrl="true" />
+          <serverVariables>
+            <set name="HTTP_UPGRADE" value="{HTTP_UPGRADE}" />
+            <set name="HTTP_CONNECTION" value="{HTTP_CONNECTION}" />
+          </serverVariables>
+        </rule>
+
+      </rules>
+    </rewrite>
+    <proxy>
+      <reverseProxy enabled="true" />
+    </proxy>
+  </system.webServer>
+</configuration>
+
+---------------------------------------------------------------------------------------------------------------
+
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <system.webServer>
+    <webSocket enabled="true" />
+    <rewrite>
+      <rules>
+        <rule name="ReverseProxyInboundRule" stopProcessing="true">
+          <match url="(.*)" />
+          <action type="Rewrite" url="http://127.0.0.1:8501/{R:1}" logRewrittenUrl="true" />
+          <serverVariables>
+            <set name="HTTP_UPGRADE" value="{HTTP_UPGRADE}" />
+            <set name="HTTP_CONNECTION" value="{HTTP_CONNECTION}" />
+          </serverVariables>
+        </rule>
+      </rules>
+    </rewrite>
+    <proxy>
+      <reverseProxy enabled="true" />
+    </proxy>
+  </system.webServer>
+</configuration>
+
