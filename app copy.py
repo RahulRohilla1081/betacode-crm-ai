@@ -7,6 +7,9 @@ from datetime import datetime
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 import warnings
+import requests
+from urllib.parse import urlparse, parse_qs
+import time
 
 COMMON_DATE_FORMATS = [
     "%d/%m/%Y %I:%M:%S %p",  # 24/10/2025 8:54:46 PM
@@ -15,6 +18,19 @@ COMMON_DATE_FORMATS = [
     "%Y-%m-%d %H:%M:%S",     # 2025-10-24 20:54:46
     "%Y-%m-%d",              # 2025-10-24
 ]
+
+st.set_page_config(page_title="BetaCode AI", page_icon="🤖", layout="wide")
+
+# Hide Streamlit default menu and footer
+hide_st_style = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    </style>
+"""
+st.markdown(hide_st_style, unsafe_allow_html=True)
+
 
 def parse_datetime_col(df, col):
     """
@@ -442,52 +458,362 @@ def run_action(df, action):
 
     return {"type":"error","message":f"unsupported action: {act}"}
 
-
-
 # ---------------------
 # Streamlit UI
 # ---------------------
-st.set_page_config(page_title="Excel + LLM Assistant", layout="wide")
-st.title("Excel + LLM Assistant — ask anything about your spreadsheet")
+
+st.markdown(
+    """
+    <div style="font-family: Poppins, sans-serif; color: #fff; text-align: left; display: inline-block; width: fit-content;">
+        <h3 style="
+            font-weight: 500;
+            font-size: 40px;
+            margin: 0;
+            margin-bottom: -20px;
+            margin-right: -35px;
+        ">
+            Ask <span style="color:#1abc9c;">Zoya AI</span>
+        </h3>
+        <div style="
+            text-align: right;
+            font-size: 12px;
+            font-weight: 400;
+            color: rgba(255,255,255,0.8);
+            margin-bottom: 15px;
+        ">
+            Powered by BetaCode
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+
 
 with st.sidebar:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"]::before {
+            content: "BetaCode";
+            position: absolute;
+            top: 10px;
+            left: 15px;
+            font-size: 35px;
+            font-weight: bold;
+            color: #fff;
+            font-family: Poppins;
+        }
+
+      [data-testid="stSidebar"]::after {
+    content: "BETA";
+    position: absolute;
+    top: 16px;
+    left: 160px; /* adjust for alignment */
+    background-color: rgba(26, 188, 156, 0.25); /* translucent base green (#1abc9c) */
+    color: #1abc9c; /* same base color for text */
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 12px;
+    border: 1px solid rgba(26, 188, 156, 0.8); /* darker border from same base */
+    font-family: Poppins, sans-serif;
+    backdrop-filter: blur(3px);
+}
+
+
+
+
+
+
+        /* Add margin below to prevent overlap */
+        [data-testid="stSidebar"] section:first-child {
+            margin-top: 45px !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+
     st.markdown("### Upload an Excel / CSV file")
-    uploaded = st.file_uploader("Choose file (.xlsx, .xls, .csv)", type=["xlsx","xls","csv"])
-    st.markdown("---")
-    # st.markdown("### Model / Settings")
-    # st.text_input("Model", value=AZURE_OPENAI_DEPLOYMENT, key="model_field")
-    # st.markdown("System prompt (used internally)")
-    # if st.button("Show system prompt"):
-    #     st.code(SYSTEM_PROMPT, language="text")
-
-if not uploaded:
-    st.info("Upload an Excel or CSV file to begin.")
-    st.stop()
-
-# Load dataset
-# Load dataset
-try:
-    if uploaded.name.endswith(".csv"):
-        df = pd.read_csv(uploaded)
+    # Dynamically reset uploader when analyse_clicked is True
+    if st.session_state.get("analyse_clicked"):
+        uploader_key = f"uploader_reset_{int(time.time())}"  # force new key
     else:
-        df = pd.read_excel(uploaded)
+        uploader_key = "file_uploader"
+
+    uploaded = st.file_uploader(
+        "Choose file (.xlsx, .xls, .csv)",
+        type=["xlsx","xls","csv"],
+        key=uploader_key
+    )
+
+    if "last_uploaded_name" not in st.session_state:
+        st.session_state["last_uploaded_name"] = None
+    if "rerun_triggered" not in st.session_state:
+        st.session_state["rerun_triggered"] = False
+    if uploaded is not None:
+        st.session_state["analyse_clicked"] = False
+        if uploaded.name != st.session_state["last_uploaded_name"]:
+            st.session_state["last_uploaded_name"] = uploaded.name
+            st.session_state["rerun_triggered"] = False
+        file_bytes = uploaded.read()
+        if uploaded.name.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(file_bytes))
+        else:
+            df = pd.read_excel(io.BytesIO(file_bytes))
         
-    # ✅ Drop completely empty rows (rows with all NaN/blank values)
-    df = df.dropna(how="all")
+        st.session_state["df"] = df  # ✅ Save to session for later access
 
-    # ✅ Drop rows that are technically empty (like only spaces)
-    df = df[~df.apply(lambda row: all(str(x).strip() == "" for x in row), axis=1)]
+        st.success(f"Uploaded file with {len(df)} rows and {len(df.columns)} columns.")
+        # st.dataframe(df.head(10))
+    else:
+        if st.session_state["last_uploaded_name"] is not None and not st.session_state["rerun_triggered"]:
+            st.session_state["last_uploaded_name"] = None
+            st.session_state["rerun_triggered"] = True
+            st.session_state["df"] = None  # ✅ Save to session for later access
 
-    # ✅ Reset index after cleaning
-    df = df.reset_index(drop=True)
+            st.rerun()
 
-except Exception as e:
-    st.error(f"Could not read file: {e}")
+    st.markdown("### Or")
+
+    st.markdown("""
+        <style>
+        div.stButton > button:first-child {
+            font-weight: 600;
+            border-radius: 8px;
+            padding: 0.6em 1.4em;
+            font-size: 16px;
+            transition: all 0.2s ease-in-out;
+        }
+        div.stButton > button:first-child:hover {
+            transform: scale(1.03);
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    if st.button("🧩 Connect to my CRM data source"):
+        # Get AUTH_ID from URL params
+        query_params = st.query_params
+        AUTH_ID = query_params.get("AUTH_ID", [None])[0] if isinstance(query_params.get("AUTH_ID"), list) else query_params.get("AUTH_ID")
+
+        if not AUTH_ID:
+            st.error("❌ AUTH_ID not found in URL. Please ensure the link includes '?AUTH_ID=your_id'")
+        else:
+            st.session_state["auth_id"] = AUTH_ID
+            st.session_state["analyse_clicked"] = True
+    st.markdown("---")
+
+
+if st.session_state.get("analyse_clicked"):
+    try:
+        uploaded = None  
+        
+        AUTH_ID = st.session_state["auth_id"]
+        api_url = "https://pdhanewala.com:9002/apis/sharepoint/contactDataGet"  # ✅ no query param
+
+        # ✅ Send POST with JSON body
+        payload = {"AUTH_ID": AUTH_ID,"PAGE_NUMBER":-1}
+        response = requests.post(api_url, json=payload)
+
+        if response.status_code == 200:
+            data = response.json()
+
+            # ✅ Always try to take data["value"] if it exists
+            if isinstance(data, dict) and "value" in data:
+                data = data["value"]
+
+            # ✅ Now check if it's a list
+            if isinstance(data, list):
+                # for item in data:
+                #     item.pop("_id", None)
+                #     item.pop("__v", None)
+                #     item.pop("IS_DELETED", None)
+                #     item.pop("isRemoved", None)
+                #     item.pop("ID", None)
+                #     item.pop("crManager", None)
+                remove_fields = ["_id", "__v","IS_DELETED", "isRemoved", "ID", "crManager"]
+
+        # ✅ Define rename mapping
+                rename_map = {
+                    "name0": "Name",
+                    "type": "Type",
+                    "designation": "Designation",
+                    "email": "Email",
+                    "department": "Department",
+                    "mobile": "Mobile",
+                    "company": "Company",
+                    "landline": "Landline",
+                    "linkedIn": "LinkedIn",
+                    "address": "Address",
+                    "level": "Level",
+                    "state": "State",
+                    "city": "City",
+                    "CREATED_DATE": "Created Date",
+                    "CREATED_BY": "Created By",
+                    "engagementStatus": "Engagement Status",
+                    "CREATED_BY_NAME": "Created By",
+                    "crManagerName": "CR Manager",
+                    "crManagerNameEmail": "CR Manager Email",
+                    # add more mappings as needed
+                }
+                engagementStatus = [
+                    {"label": "Cold", "value": "1"},
+                    {"label": "Warm", "value": "2"},
+                    {"label": "Hot", "value": "3"},
+                    {"label": "Signed", "value": "4"},
+                    {"label": "Dropped", "value": "5"},
+                ]
+                # make a quick lookup dict
+                engagement_map = {item["value"]: item["label"] for item in engagementStatus}
+
+                cleaned_data = []
+                for item in data:
+                    if "engagementStatus" in item:
+                        val = str(item["engagementStatus"])  # convert to string just in case
+                        item["engagementStatus"] = engagement_map.get(val, val) 
+                    # ✅ Remove unwanted fields
+                    cleaned = {k: v for k, v in item.items() if k not in remove_fields}
+
+                    # ✅ Rename fields according to mapping
+                    cleaned = {rename_map.get(k, k): v for k, v in cleaned.items()}
+
+                    cleaned_data.append(cleaned)
+                df = pd.DataFrame(cleaned_data)
+                st.session_state["df"] = df
+                # st.success(f"Fetched {len(df)} rows")
+            else:
+                st.error("API did not return a valid JSON array under 'value'.")
+                st.stop()
+        else:
+            st.error(f"API call failed with status {response.status_code}: {response.text}")
+            st.stop()
+
+        # ✅ Store df in session for later use
+        st.session_state["df"] = df
+
+    except Exception as e:
+        st.error(f"❌ Error while fetching API data: {e}")
+        st.stop()
+
+
+if not uploaded and "df" not in st.session_state:
+    st.markdown(
+        """
+        <style>
+        .custom-info-box {
+            background-color: #0e1117; /* dark background */
+            color: white !important;
+            border-left: 4px solid #1abc9c; /* optional accent border */
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Poppins', sans-serif;
+            line-height: 1.6;
+        }
+        .custom-info-box b {
+            color: #1abc9c;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        """
+        <div class="custom-info-box">
+            To get started, upload your contact list Excel file or work on your CRM data by clicking 'Connect to my CRM data source' and enter your questions to analyze your data.<br><br>
+            <b>Example Prompts:</b><br><br>
+            • Give the list of contacts created in October 2025<br><br>
+            • How many contacts were created in August 2025<br><br>
+            • Give a bar graph for months vs count of contacts created in that month<br><br>
+            • Give multi-line charts showing how many contacts each CR Manager has added in each month till date. Lines should be color-coded for each CR Manager.<br>
+            
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
     st.stop()
 
+# Load dataset
+# Load dataset
+if uploaded:
+    try:
+        if uploaded.name.endswith(".csv"):
+            df = pd.read_csv(uploaded)
+        else:
+            df = pd.read_excel(uploaded)
+            
+        # ✅ Drop completely empty rows (rows with all NaN/blank values)
+        df = df.dropna(how="all")
 
-st.success(f"Loaded `{uploaded.name}` — {df.shape[0]} rows × {df.shape[1]} cols")
-st.dataframe(df.head(10))
+        # ✅ Drop rows that are technically empty (like only spaces)
+        df = df[~df.apply(lambda row: all(str(x).strip() == "" for x in row), axis=1)]
+
+        # ✅ Reset index after cleaning
+        df = df.reset_index(drop=True)
+
+    except Exception as e:
+        st.error(f"Could not read file: {e}")
+        st.stop()
+
+# ---------------------
+# Main Display Section
+# ---------------------
+
+# Retrieve the DataFrame safely from session state
+df = st.session_state.get("df")
+
+if df is not None:
+    st.markdown(
+        f"✅ **Loaded:** `{uploaded.name if uploaded else 'BetaCode CRM Data'}` — "
+        f"**{len(df)} rows × {len(df.columns)} cols**"
+    )
+
+    # 🧠 Show full scrollable table (not truncated)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        height=400  # adjust for screen
+    )
+
+    # 🧠 Input area for user prompt
+    st.markdown("---")
+    # user_prompt = st.text_area(
+    #     "Ask anything about your data:",
+    #     placeholder="e.g. Show total contacts created per month by CR Manager",
+    #     height=120,
+    # )
+
+    # if st.button("Run"):
+    #     with st.spinner("Thinking..."):
+    #         result_text = call_openai_to_get_action(SYSTEM_PROMPT, user_prompt, df.columns)
+    #         try:
+    #             action = safe_load_json(result_text)
+    #             output = run_action(df, action)
+    #         except Exception as e:
+    #             st.error(f"❌ Failed to parse model output: {e}")
+    #             st.text(result_text)
+    #             st.stop()
+
+    #         if output["type"] == "error":
+    #             st.error(output["message"])
+    #         elif output["type"] == "text":
+    #             st.success(output["text"])
+    #         elif output["type"] == "table":
+    #             st.dataframe(output["data"], use_container_width=True, height=600)
+    #         elif output["type"] == "chart":
+    #             st.altair_chart(output["chart"], use_container_width=True)
+else:
+    st.info("👈 Upload a file or click **Analyse my own data** to get started.")
+    
+# if uploaded is not None:
+#     st.success(f"Loaded `{uploaded.name}` — {df.shape[0]} rows × {df.shape[1]} cols")
+# else:
+#     st.success(f"Loaded fetched data — {df.shape[0]} rows × {df.shape[1]} cols")
+# st.dataframe(df.head(10))
 
 # Keep prompt box visible persistently (chat-like)
 if "history" not in st.session_state:
@@ -522,6 +848,15 @@ for h in st.session_state.history:
             elif result["type"] == "chart":
                 st.altair_chart(result["chart"], use_container_width=True)
             elif result["type"] == "text":
-                st.write(result["text"])
+                response = result["text"]
+    # Clean up the output if it contains "Count of"
+                if "Count of" in response:
+                    import re
+                    match = re.search(r"= ?(\d+)", response)
+                    if match:
+                        response = f"Count = {match.group(1)}"
+
+                st.write(response)
+
         except:
             st.warning("Could not parse model output.")

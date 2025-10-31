@@ -566,7 +566,7 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-   
+
     st.markdown("### Upload an Excel / CSV file")
     # Dynamically reset uploader when analyse_clicked is True
     if st.session_state.get("analyse_clicked"):
@@ -609,7 +609,20 @@ with st.sidebar:
 
     st.markdown("### Or")
 
-   
+    st.markdown("""
+        <style>
+        div.stButton > button:first-child {
+            font-weight: 600;
+            border-radius: 8px;
+            padding: 0.6em 1.4em;
+            font-size: 16px;
+            transition: all 0.2s ease-in-out;
+        }
+        div.stButton > button:first-child:hover {
+            transform: scale(1.03);
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
     if st.button("🧩 Connect to my CRM data source"):
         # Get AUTH_ID from URL params
@@ -622,7 +635,6 @@ with st.sidebar:
         else:
             st.session_state["auth_id"] = AUTH_ID
             st.session_state["analyse_clicked"] = True
-    
     st.markdown("---")
 
 
@@ -642,28 +654,17 @@ if st.session_state.get("analyse_clicked"):
 
             # ✅ Always try to take data["value"] if it exists
             if isinstance(data, dict) and "value" in data:
-                employee_name = data["employee_name"]
                 data = data["value"]
 
             # ✅ Now check if it's a list
             if isinstance(data, list):
-                # st.success(f"👋 Hi {employee_name}! Fetched {len(data)} contacts from CRM data source.".format(**data[0] if data else {}))
-                st.markdown(f"""
-<div style="
-    font-family: 'Poppins', sans-serif;
-    background-color: #193929;  /* translucent parrot green */
-    color: #5DE488;  /* bright success green text */
-    padding: 10px 24px;
-    border-radius: 8px;
-    font-size: 16px;
-    font-weight: 500;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    margin-bottom: 10px;
-">
-👋 Hi <b>{employee_name}</b>! Fetched <b>{len(data)}</b> contacts from CRM data source.
-</div>
-""", unsafe_allow_html=True)
-
+                # for item in data:
+                #     item.pop("_id", None)
+                #     item.pop("__v", None)
+                #     item.pop("IS_DELETED", None)
+                #     item.pop("isRemoved", None)
+                #     item.pop("ID", None)
+                #     item.pop("crManager", None)
                 remove_fields = ["_id", "__v","IS_DELETED", "isRemoved", "ID", "crManager"]
 
         # ✅ Define rename mapping
@@ -890,5 +891,4 @@ for h in st.session_state.history:
                 st.write(response)
 
         except:
-            st.warning("Hello! Data could not be found")
-
+            st.warning("Could not parse model output.")
