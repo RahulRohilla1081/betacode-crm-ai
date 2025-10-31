@@ -519,7 +519,31 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+st.markdown("""
+    <style>
+        [data-testid="stSidebar"] {
+            background-color: #1e1e1e !important;
+        }
 
+        div.stDownloadButton > button {
+            background: linear-gradient(90deg, #313866, #504099);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 0.6rem 1rem;
+            font-size: 15px;
+            font-weight: 500;
+            width: 100%;
+            transition: all 0.3s ease-in-out;
+        }
+
+        div.stDownloadButton > button:hover {
+            background: linear-gradient(90deg, #5b5fc7, #6f73f1);
+            transform: scale(1.03);
+            box-shadow: 0 0 10px rgba(90, 90, 255, 0.4);
+        }
+    </style>
+""", unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown(
@@ -624,7 +648,14 @@ with st.sidebar:
             st.session_state["analyse_clicked"] = True
     
     st.markdown("---")
-
+    file_path="sample_data.xlsx"
+    st.markdown("### 📁 Download Center")
+    st.download_button(
+        label="⬇️ Download Sample Data",
+        data=open(file_path, "rb"),
+        file_name="sample_data",
+        mime="application/octet-stream"
+    )
 
 if st.session_state.get("analyse_clicked"):
     try:
@@ -715,17 +746,17 @@ if st.session_state.get("analyse_clicked"):
                 st.session_state["df"] = df
                 # st.success(f"Fetched {len(df)} rows")
             else:
-                st.error("API did not return a valid JSON array under 'value'.")
+                st.error("Data not found")
                 st.stop()
         else:
-            st.error(f"API call failed with status {response.status_code}: {response.text}")
+            st.error(f"Something went wrong while fetching data")
             st.stop()
 
         # ✅ Store df in session for later use
         st.session_state["df"] = df
 
     except Exception as e:
-        st.error(f"❌ Error while fetching API data: {e}")
+        st.error(f"❌ Something went wrong while fetching data")
         st.stop()
 
 
@@ -759,6 +790,8 @@ if not uploaded and "df" not in st.session_state:
             • How many contacts were created in August 2025<br><br>
             • Give a bar graph for months vs count of contacts created in that month<br><br>
             • Give multi-line charts showing how many contacts each CR Manager has added in each month till date. Lines should be color-coded for each CR Manager.<br>
+            <br>
+            👈 Ready to explore? Download the sample contact file and start prompting!
             
         </div>
         """,
