@@ -5,18 +5,19 @@
     <rewrite>
       <rules>
         
+        <!-- Restrict direct access: only allow if Referer starts with https://abcd.com -->
 <rule name="RestrictAccessToAbcd" stopProcessing="true">
-  <match url=".*" />
+  <match url="^(?!static/).*" />
   <conditions logicalGrouping="MatchAll">
-    <!-- Allow static files (woff2, js, css, etc.) and websocket paths -->
-    <add input="{URL}" pattern="^/(static/|_stcore/|stream|favicon\.ico)" negate="true" />
-    <!-- Block if Referer is not from allowed domain -->
-    <add input="{HTTP_REFERER}" pattern="^https://cms\.betacodeinfotech\.com" negate="true" />
+    <add input="{HTTP_REFERER}" pattern="^$|^https://(truetalent\.betacodeinfotech\.com|pdhanewala\.com:4002)" negate="true" />
   </conditions>
   <action type="CustomResponse" statusCode="403" subStatusCode="0"
           statusReason="Forbidden"
           statusDescription="Access restricted" />
 </rule>
+
+
+
         <!-- Existing reverse proxy rule -->
         <rule name="ReverseProxyInboundRule" stopProcessing="true">
           <match url="(.*)" />
