@@ -555,8 +555,8 @@ st.markdown("""
         }
 
         div.stDownloadButton > button:hover {
-            background: linear-gradient(90deg, #5b5fc7, #6f73f1);
-            transform: scale(1.03);
+            # background: linear-gradient(90deg, #5b5fc7, #6f73f1);
+            # transform: scale(1.03);
             box-shadow: 0 0 10px rgba(90, 90, 255, 0.4);
         }
     </style>
