@@ -398,6 +398,18 @@ def run_action(df, action):
             group_cols = [group_cols]
         if not group_cols:
             return {"type": "error", "message": "groupby requires 'columns' or 'column'."}
+        group_cols = action.get("columns") or action.get("column")
+
+        if isinstance(group_cols, str):
+            group_cols = [group_cols]
+
+        # ✅ Auto-detect fallback for "who"/"person"/"employee" queries
+        if not group_cols:
+            possible_cols = [c for c in df.columns if "CREATED_BY" in c.upper() or "EMPLOYEE" in c.upper() or "NAME" in c.upper()]
+            if possible_cols:
+                group_cols = [possible_cols[0]]  # pick the best match automatically
+            else:
+                return {"type": "error", "message": "groupby requires 'columns' or 'column'."}
 
         # Agg and optional values (what to aggregate)
         agg = action.get("agg", "count")
@@ -436,10 +448,15 @@ def run_action(df, action):
                 else:
                     grouped = df2.groupby(group_cols).size().reset_index(name="Count")
             else:
-                # other aggregations (require values_col)
+                # allow non-value aggs like 'count', 'size', or 'max count per group'
                 if not values_col or values_col not in df2.columns:
-                    return {"type": "error", "message": "groupby with agg requires 'values' (column to aggregate)."}
-                grouped = df2.groupby(group_cols)[values_col].agg(agg).reset_index()
+                    if str(agg).lower() in ["count", "size", "nunique"]:
+                        grouped = df2.groupby(group_cols).size().reset_index(name="Count")
+                    else:
+                        return {"type": "error", "message": f"groupby with agg '{agg}' requires 'values' column."}
+                else:
+                    grouped = df2.groupby(group_cols)[values_col].agg(agg).reset_index()
+
             return {"type": "table", "data": grouped}
         except Exception as e:
             return {"type": "error", "message": f"groupby failed: {e}"}
@@ -635,25 +652,79 @@ with st.sidebar:
 
    
 
-    if st.button("🧩 Connect to my CRM data source"):
-        # Get AUTH_ID from URL params
-        query_params = st.query_params
-        AUTH_ID = query_params.get("AUTH_ID", [None])[0] if isinstance(query_params.get("AUTH_ID"), list) else query_params.get("AUTH_ID")
+    if "loading" not in st.session_state:
+        st.session_state.loading = False
 
-        if not AUTH_ID:
-            st.error("❌&nbsp;&nbsp;&nbsp;No Data found")
+    # CSS — perfectly mimic Streamlit’s st.button look
+    st.markdown("""
+    <style>
+    .loading-btn {
+        background-color: #2B2B36;
+        color: white;
+        border: none;
+        border-radius: 0.5rem;
+        border: 1px solid #53545D;
+        padding: 0.5rem 1rem;
+        font-family: inherit;
+        font-weight: 500;
+        font-size: 0.9rem;
+        cursor: not-allowed;
+        opacity: 0.85;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+                width: 96%;
+    }
+    .loading-btn:hover {
+        background-color: #343337;
+        opacity: 0.85;
+    }
+    .loading-spinner {
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-top: 2px solid white;
+        border-radius: 50%;
+        width: 14px;
+        height: 14px;
+        margin-left: 8px;
+        animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
+    # Button + loader logic
+    def connect_to_crm():
+        if not st.session_state.loading:
+            if st.button("🧩 Connect my CRM data source"):
+                st.session_state.loading = True
+                query_params = st.query_params
+                AUTH_ID = query_params.get("AUTH_ID", [None])[0] if isinstance(query_params.get("AUTH_ID"), list) else query_params.get("AUTH_ID")
+
+                if not AUTH_ID:
+                    st.error("❌  No Data found")
+                    st.session_state.loading = False  # optional: reset state
+                    return
+                else:
+                    st.session_state["auth_id"] = AUTH_ID
+                    st.session_state["analyse_clicked"] = True
+                st.rerun()
         else:
-            st.session_state["auth_id"] = AUTH_ID
+            st.markdown('<button class="loading-btn">Connecting<span class="loading-spinner"></span></button>', unsafe_allow_html=True)
+            time.sleep(5)
+            st.session_state.loading = False
             st.session_state["analyse_clicked"] = True
-    
+            st.rerun()
+    connect_to_crm()
     st.markdown("---")
     file_path="sample_data.xlsx"
     st.markdown("### 📁 Download Center")
     st.download_button(
         label="⬇️ Download Sample Data",
         data=open(file_path, "rb"),
-        file_name="sample_data",
+        file_name="sample_data.xlsx",
         mime="application/octet-stream"
     )
 
@@ -662,7 +733,10 @@ if st.session_state.get("analyse_clicked"):
         uploaded = None  
         
         AUTH_ID = st.session_state["auth_id"]
-        api_url = "https://pdhanewala.com:9001/apis/sharepoint/contactDataGet"  # ✅ no query param
+        CRM_SERVER_URL = os.getenv("CRM_SERVER_URL")
+
+        # ✅ Construct full API URL
+        api_url = f"{CRM_SERVER_URL}/apis/sharepoint/contactDataGet"
 
         # ✅ Send POST with JSON body
         payload = {"AUTH_ID": AUTH_ID,"PAGE_NUMBER":-1}
@@ -756,8 +830,7 @@ if st.session_state.get("analyse_clicked"):
         st.session_state["df"] = df
 
     except Exception as e:
-        st.error(f"❌ Something went wrong while fetching data")
-        st.stop()
+        pass
 
 
 if not uploaded and "df" not in st.session_state:
@@ -784,7 +857,7 @@ if not uploaded and "df" not in st.session_state:
     st.markdown(
         """
         <div class="custom-info-box">
-            To get started, upload your contact list Excel file or work on your CRM data by clicking 'Connect to my CRM data source' and enter your questions to analyze your data.<br><br>
+            To get started, upload your contact list Excel file or work on your CRM data by clicking 'Connect my CRM data source' and enter your questions to analyze your data.<br><br>
             <b>Example Prompts:</b><br><br>
             • Give the list of contacts created in October 2025<br><br>
             • How many contacts were created in August 2025<br><br>
@@ -806,21 +879,23 @@ if not uploaded and "df" not in st.session_state:
 if uploaded:
     try:
         if uploaded.name.endswith(".csv"):
-            df = pd.read_csv(uploaded)
+            # ✅ Decode bytes → text, then pass to pandas
+            stringio = io.StringIO(uploaded.getvalue().decode("utf-8"))
+            df = pd.read_csv(stringio)
         else:
             df = pd.read_excel(uploaded)
-            
-        # ✅ Drop completely empty rows (rows with all NaN/blank values)
+
+        # ✅ Drop completely empty rows
         df = df.dropna(how="all")
 
-        # ✅ Drop rows that are technically empty (like only spaces)
+        # ✅ Drop rows that contain only spaces or blanks
         df = df[~df.apply(lambda row: all(str(x).strip() == "" for x in row), axis=1)]
 
-        # ✅ Reset index after cleaning
+        # ✅ Reset index
         df = df.reset_index(drop=True)
 
     except Exception as e:
-        st.error(f"Could not read file: {e}")
+        st.error(f"❌ Could not read file: {e}")
         st.stop()
 
 # ---------------------
@@ -871,7 +946,7 @@ if df is not None:
     #         elif output["type"] == "chart":
     #             st.altair_chart(output["chart"], use_container_width=True)
 else:
-    st.info("👈 Upload a file or click **Analyse my own data** to get started.")
+    st.info("👈 Upload a file or click **Connect my CRM data source** to get started.")
     
 # if uploaded is not None:
 #     st.success(f"Loaded `{uploaded.name}` — {df.shape[0]} rows × {df.shape[1]} cols")
