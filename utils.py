@@ -1,5 +1,8 @@
 from datetime import datetime
 import io, json, os, textwrap, re
+from dotenv import load_dotenv
+
+load_dotenv()
 
 AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
