@@ -10,6 +10,37 @@ import warnings
 import requests
 from urllib.parse import urlparse, parse_qs
 import time
+import streamlit.components.v1 as components
+
+components.html(
+    """
+    <script>
+        // Detect the actual Streamlit sidebar key
+        const key = Object.keys(window.localStorage).find(k => k.startsWith("stSidebarCollapsed-"));
+        if (!key) {
+            console.log("❌ No sidebar key found");
+        } else {
+            const state = window.localStorage.getItem(key);
+            console.log("🔎 Sidebar state", key, "=", state);
+
+            // ✅ Prevent multiple reload loops
+            const guard = sessionStorage.getItem("sidebar_fix_done");
+
+            if (state === "true" && !guard) {
+                console.log("🛠️ Sidebar collapsed → expanding now...");
+                window.localStorage.setItem(key, "false");
+                sessionStorage.setItem("sidebar_fix_done", "1");
+                setTimeout(() => window.location.reload(), 300);
+            } else {
+                console.log("✅ Sidebar already open or fix already applied");
+                sessionStorage.removeItem("sidebar_fix_done");
+            }
+        }
+    </script>
+    """,
+    height=0,
+)
+
 
 COMMON_DATE_FORMATS = [
     "%d/%m/%Y %I:%M:%S %p",  # 24/10/2025 8:54:46 PM
@@ -129,20 +160,60 @@ Important:
 # Utility Functions
 # ---------------------
 
-def call_openai_to_get_action(system_prompt, user_prompt, df_columns):
-    context = f"Available columns: {', '.join(df_columns)}"
+def call_openai_to_get_action(system_prompt, user_prompt, columns):
+    """
+    Calls the model and ensures valid JSON for data actions.
+    If user asks general/greeting question, returns friendly text instead.
+    """
+    import json, re, os
+    from openai import AzureOpenAI
+
+    # Initialize Azure OpenAI client
+    
+
+    # Detect general/greeting/help questions
+    if re.search(r"\b(hi|hello|hey|who\s+are\s+you|help|what\s+can\s+you)\b", user_prompt, re.I):
+        friendly_response = (
+            "👋 Hi! I'm your **CRM AI Assistant** — powered by Azure OpenAI.\n\n"
+            "I can help you explore and analyze your CRM data with natural language. "
+            "For example, you can ask me:\n\n"
+            "- 🔍 *Filter contacts created in October 2025*\n"
+            "- 📊 *Show top 5 clients by revenue*\n"
+            "- 📈 *Plot total sales by month*\n"
+            "- 🧩 *Summarize meeting outcomes for last quarter*\n\n"
+            "Just type what you need — I’ll take care of the rest!"
+        )
+        # Return this as a simple string (no 'action' wrapper)
+        return json.dumps({
+            "action": "friendly",
+            "text": friendly_response
+        })
+
+    # Otherwise, construct the prompt for the model
+    full_user_prompt = f"""
+    You are a CRM data assistant. Based on the user's request below, respond strictly in JSON format.
+    Available columns: {columns}.
+    User request: "{user_prompt}".
+    """
+
     try:
         response = client.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
+            model=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"{context}\n\n{user_prompt}"}
+                {"role": "user", "content": full_user_prompt}
             ]
         )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"❌ Error: {e}"
 
+        raw_text = response.choices[0].message.content.strip()
+
+        # Validate that the model returned valid JSON
+        json.loads(raw_text)
+        return raw_text
+
+    except Exception as e:
+        safe_json = {"action": "error", "message": f"Error while calling model: {str(e)}"}
+        return json.dumps(safe_json)
 def safe_load_json(text):
     try:
         return json.loads(text)
@@ -229,6 +300,12 @@ def apply_filters(df, filters):
 
 def run_action(df, action):
     act = action.get("action")
+
+    # Handle friendly or greeting responses
+    if act == "friendly":
+        return {"type": "text", "text": action.get("text", "Hi there!")}
+
+    
     if act == "preview":
         return {"type":"table","data":df.head(10)}
     if act == "show_columns":
@@ -367,6 +444,18 @@ def run_action(df, action):
             group_cols = [group_cols]
         if not group_cols:
             return {"type": "error", "message": "groupby requires 'columns' or 'column'."}
+        group_cols = action.get("columns") or action.get("column")
+
+        if isinstance(group_cols, str):
+            group_cols = [group_cols]
+
+        # ✅ Auto-detect fallback for "who"/"person"/"employee" queries
+        if not group_cols:
+            possible_cols = [c for c in df.columns if "CREATED_BY" in c.upper() or "EMPLOYEE" in c.upper() or "NAME" in c.upper()]
+            if possible_cols:
+                group_cols = [possible_cols[0]]  # pick the best match automatically
+            else:
+                return {"type": "error", "message": "groupby requires 'columns' or 'column'."}
 
         # Agg and optional values (what to aggregate)
         agg = action.get("agg", "count")
@@ -405,10 +494,15 @@ def run_action(df, action):
                 else:
                     grouped = df2.groupby(group_cols).size().reset_index(name="Count")
             else:
-                # other aggregations (require values_col)
+                # allow non-value aggs like 'count', 'size', or 'max count per group'
                 if not values_col or values_col not in df2.columns:
-                    return {"type": "error", "message": "groupby with agg requires 'values' (column to aggregate)."}
-                grouped = df2.groupby(group_cols)[values_col].agg(agg).reset_index()
+                    if str(agg).lower() in ["count", "size", "nunique"]:
+                        grouped = df2.groupby(group_cols).size().reset_index(name="Count")
+                    else:
+                        return {"type": "error", "message": f"groupby with agg '{agg}' requires 'values' column."}
+                else:
+                    grouped = df2.groupby(group_cols)[values_col].agg(agg).reset_index()
+
             return {"type": "table", "data": grouped}
         except Exception as e:
             return {"type": "error", "message": f"groupby failed: {e}"}
@@ -488,7 +582,31 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+st.markdown("""
+    <style>
+        [data-testid="stSidebar"] {
+            background-color: #1e1e1e !important;
+        }
 
+        div.stDownloadButton > button {
+            background: linear-gradient(90deg, #313866, #504099);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 0.6rem 1rem;
+            font-size: 15px;
+            font-weight: 500;
+            width: 100%;
+            transition: all 0.3s ease-in-out;
+        }
+
+        div.stDownloadButton > button:hover {
+            # background: linear-gradient(90deg, #5b5fc7, #6f73f1);
+            # transform: scale(1.03);
+            box-shadow: 0 0 10px rgba(90, 90, 255, 0.4);
+        }
+    </style>
+""", unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown(
@@ -505,7 +623,7 @@ with st.sidebar:
             font-family: Poppins;
         }
 
-      [data-testid="stSidebar"]::after {
+    [data-testid="stSidebar"]::after {
     content: "BETA";
     position: absolute;
     top: 16px;
@@ -535,7 +653,7 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-
+   
     st.markdown("### Upload an Excel / CSV file")
     # Dynamically reset uploader when analyse_clicked is True
     if st.session_state.get("analyse_clicked"):
@@ -578,40 +696,93 @@ with st.sidebar:
 
     st.markdown("### Or")
 
+   
+
+    if "loading" not in st.session_state:
+        st.session_state.loading = False
+
+    # CSS — perfectly mimic Streamlit’s st.button look
     st.markdown("""
-        <style>
-        div.stButton > button:first-child {
-            font-weight: 600;
-            border-radius: 8px;
-            padding: 0.6em 1.4em;
-            font-size: 16px;
-            transition: all 0.2s ease-in-out;
-        }
-        div.stButton > button:first-child:hover {
-            transform: scale(1.03);
-        }
-        </style>
+    <style>
+    .loading-btn {
+        background-color: #2B2B36;
+        color: white;
+        border: none;
+        border-radius: 0.5rem;
+        border: 1px solid #53545D;
+        padding: 0.5rem 1rem;
+        font-family: inherit;
+        font-weight: 500;
+        font-size: 0.9rem;
+        cursor: not-allowed;
+        opacity: 0.85;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+                width: 96%;
+    }
+    .loading-btn:hover {
+        background-color: #343337;
+        opacity: 0.85;
+    }
+    .loading-spinner {
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-top: 2px solid white;
+        border-radius: 50%;
+        width: 14px;
+        height: 14px;
+        margin-left: 8px;
+        animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+    }
+    </style>
     """, unsafe_allow_html=True)
 
-    if st.button("🧩 Connect to my CRM data source"):
-        # Get AUTH_ID from URL params
-        query_params = st.query_params
-        AUTH_ID = query_params.get("AUTH_ID", [None])[0] if isinstance(query_params.get("AUTH_ID"), list) else query_params.get("AUTH_ID")
+    # Button + loader logic
+    def connect_to_crm():
+        if not st.session_state.loading:
+            if st.button("🧩 Connect my CRM data source"):
+                st.session_state.loading = True
+                query_params = st.query_params
+                AUTH_ID = query_params.get("AUTH_ID", [None])[0] if isinstance(query_params.get("AUTH_ID"), list) else query_params.get("AUTH_ID")
 
-        if not AUTH_ID:
-            st.error("❌ AUTH_ID not found in URL. Please ensure the link includes '?AUTH_ID=your_id'")
+                if not AUTH_ID:
+                    st.error("❌  No Data found")
+                    st.session_state.loading = False  # optional: reset state
+                    return
+                else:
+                    st.session_state["auth_id"] = AUTH_ID
+                    st.session_state["analyse_clicked"] = True
+                st.rerun()
         else:
-            st.session_state["auth_id"] = AUTH_ID
+            st.markdown('<button class="loading-btn">Connecting<span class="loading-spinner"></span></button>', unsafe_allow_html=True)
+            time.sleep(5)
+            st.session_state.loading = False
             st.session_state["analyse_clicked"] = True
+            st.rerun()
+    connect_to_crm()
     st.markdown("---")
-
+    file_path="sample_data.xlsx"
+    st.markdown("### 📁 Download Center")
+    st.download_button(
+        label="⬇️ Download Sample Data",
+        data=open(file_path, "rb"),
+        file_name="sample_data.xlsx",
+        mime="application/octet-stream"
+    )
 
 if st.session_state.get("analyse_clicked"):
     try:
         uploaded = None  
         
         AUTH_ID = st.session_state["auth_id"]
-        api_url = "https://pdhanewala.com:9002/apis/sharepoint/contactDataGet"  # ✅ no query param
+        CRM_SERVER_URL = os.getenv("CRM_SERVER_URL")
+
+        # ✅ Construct full API URL
+        api_url = f"{CRM_SERVER_URL}/apis/sharepoint/contactDataGet"
 
         # ✅ Send POST with JSON body
         payload = {"AUTH_ID": AUTH_ID,"PAGE_NUMBER":-1}
@@ -622,17 +793,28 @@ if st.session_state.get("analyse_clicked"):
 
             # ✅ Always try to take data["value"] if it exists
             if isinstance(data, dict) and "value" in data:
+                employee_name = data["employee_name"]
                 data = data["value"]
 
             # ✅ Now check if it's a list
             if isinstance(data, list):
-                # for item in data:
-                #     item.pop("_id", None)
-                #     item.pop("__v", None)
-                #     item.pop("IS_DELETED", None)
-                #     item.pop("isRemoved", None)
-                #     item.pop("ID", None)
-                #     item.pop("crManager", None)
+                # st.success(f"👋 Hi {employee_name}! Fetched {len(data)} contacts from CRM data source.".format(**data[0] if data else {}))
+                st.markdown(f"""
+<div style="
+    font-family: 'Poppins', sans-serif;
+    background-color: #193929;  /* translucent parrot green */
+    color: #5DE488;  /* bright success green text */
+    padding: 10px 24px;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 500;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    margin-bottom: 10px;
+">
+👋 Hi <b>{employee_name}</b>! Fetched <b>{len(data)}</b> contacts from CRM data source.
+</div>
+""", unsafe_allow_html=True)
+
                 remove_fields = ["_id", "__v","IS_DELETED", "isRemoved", "ID", "crManager"]
 
         # ✅ Define rename mapping
@@ -684,18 +866,17 @@ if st.session_state.get("analyse_clicked"):
                 st.session_state["df"] = df
                 # st.success(f"Fetched {len(df)} rows")
             else:
-                st.error("API did not return a valid JSON array under 'value'.")
+                st.error("Data not found")
                 st.stop()
         else:
-            st.error(f"API call failed with status {response.status_code}: {response.text}")
+            st.error(f"Something went wrong while fetching data")
             st.stop()
 
         # ✅ Store df in session for later use
         st.session_state["df"] = df
 
     except Exception as e:
-        st.error(f"❌ Error while fetching API data: {e}")
-        st.stop()
+        pass
 
 
 if not uploaded and "df" not in st.session_state:
@@ -722,12 +903,14 @@ if not uploaded and "df" not in st.session_state:
     st.markdown(
         """
         <div class="custom-info-box">
-            To get started, upload your contact list Excel file or work on your CRM data by clicking 'Connect to my CRM data source' and enter your questions to analyze your data.<br><br>
+            To get started, upload your contact list Excel file or work on your CRM data by clicking 'Connect my CRM data source' and enter your questions to analyze your data.<br><br>
             <b>Example Prompts:</b><br><br>
             • Give the list of contacts created in October 2025<br><br>
             • How many contacts were created in August 2025<br><br>
             • Give a bar graph for months vs count of contacts created in that month<br><br>
             • Give multi-line charts showing how many contacts each CR Manager has added in each month till date. Lines should be color-coded for each CR Manager.<br>
+            <br>
+            👈 Ready to explore? Download the sample contact file and start prompting!
             
         </div>
         """,
@@ -742,21 +925,23 @@ if not uploaded and "df" not in st.session_state:
 if uploaded:
     try:
         if uploaded.name.endswith(".csv"):
-            df = pd.read_csv(uploaded)
+            # ✅ Decode bytes → text, then pass to pandas
+            stringio = io.StringIO(uploaded.getvalue().decode("utf-8"))
+            df = pd.read_csv(stringio)
         else:
             df = pd.read_excel(uploaded)
-            
-        # ✅ Drop completely empty rows (rows with all NaN/blank values)
+
+        # ✅ Drop completely empty rows
         df = df.dropna(how="all")
 
-        # ✅ Drop rows that are technically empty (like only spaces)
+        # ✅ Drop rows that contain only spaces or blanks
         df = df[~df.apply(lambda row: all(str(x).strip() == "" for x in row), axis=1)]
 
-        # ✅ Reset index after cleaning
+        # ✅ Reset index
         df = df.reset_index(drop=True)
 
     except Exception as e:
-        st.error(f"Could not read file: {e}")
+        st.error(f"❌ Could not read file: {e}")
         st.stop()
 
 # ---------------------
@@ -807,7 +992,7 @@ if df is not None:
     #         elif output["type"] == "chart":
     #             st.altair_chart(output["chart"], use_container_width=True)
 else:
-    st.info("👈 Upload a file or click **Analyse my own data** to get started.")
+    st.info("👈 Upload a file or click **Connect my CRM data source** to get started.")
     
 # if uploaded is not None:
 #     st.success(f"Loaded `{uploaded.name}` — {df.shape[0]} rows × {df.shape[1]} cols")
@@ -816,6 +1001,7 @@ else:
 # st.dataframe(df.head(10))
 
 # Keep prompt box visible persistently (chat-like)
+# --- Ensure history persists ---
 if "history" not in st.session_state:
     st.session_state.history = []
 
@@ -823,24 +1009,32 @@ prompt = st.chat_input("Ask something about your data (e.g. 'filter contacts cre
 
 if prompt:
     with st.spinner("Thinking..."):
-        raw_action_text = call_openai_to_get_action(SYSTEM_PROMPT, prompt, list(df.columns))
-        st.session_state.history.append({"user": prompt, "model": raw_action_text})
         try:
-            action = safe_load_json(raw_action_text)
-            result = run_action(df, action)
-        except Exception as e:
-            result = {"type": "error", "message": str(e)}
+            raw_action_text = call_openai_to_get_action(SYSTEM_PROMPT, prompt, list(df.columns))
+            st.session_state.history.append({"user": prompt, "model": raw_action_text})
 
-# Display conversation
+            # --- Detect non-JSON output (like "Hi, who are you") ---
+            if not raw_action_text.strip().startswith("{"):
+                result = {"type": "text", "text": raw_action_text}
+            else:
+                try:
+                    action = safe_load_json(raw_action_text)
+                    result = run_action(df, action)
+                except Exception as e:
+                    result = {"type": "error", "message": str(e)}
+
+        except Exception as e:
+            st.error(f"❌ Error while generating response: {e}")
+
+# --- Display conversation history ---
 for h in st.session_state.history:
     with st.chat_message("user"):
         st.write(h["user"])
     with st.chat_message("assistant"):
-        # st.code(h["model"], language="json")
-
         try:
             action = safe_load_json(h["model"])
             result = run_action(df, action)
+
             if result["type"] == "error":
                 st.error(result["message"])
             elif result["type"] == "table":
@@ -849,7 +1043,8 @@ for h in st.session_state.history:
                 st.altair_chart(result["chart"], use_container_width=True)
             elif result["type"] == "text":
                 response = result["text"]
-    # Clean up the output if it contains "Count of"
+
+                # Clean up if contains "Count of"
                 if "Count of" in response:
                     import re
                     match = re.search(r"= ?(\d+)", response)
@@ -858,5 +1053,6 @@ for h in st.session_state.history:
 
                 st.write(response)
 
-        except:
-            st.warning("Could not parse model output.")
+        except Exception as e:
+            st.warning(f"⚠️ Hello! Data could not be found — {e}")
+
