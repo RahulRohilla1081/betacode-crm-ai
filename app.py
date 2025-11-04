@@ -12,11 +12,11 @@ from urllib.parse import urlparse, parse_qs
 import time
 import streamlit.components.v1 as components
 from utils import COMMON_DATE_FORMATS,format_date,SYSTEM_PROMPT,AZURE_OPENAI_KEY,AZURE_OPENAI_ENDPOINT,AZURE_OPENAI_DEPLOYMENT,AZURE_OPENAI_API_VERSION
-from distutils.util import strtobool
-
+def str_to_bool(val):
+    return str(val).strip().lower() in ("true", "1", "yes", "y", "t")
 query_params = st.query_params
 DOWNLOAD =  query_params.get("DOWNLOAD")
-DOWNLOAD = bool(strtobool(DOWNLOAD))
+DOWNLOAD = str_to_bool(DOWNLOAD)
 components.html(
     """
     <script>
