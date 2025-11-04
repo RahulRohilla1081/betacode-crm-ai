@@ -12,8 +12,11 @@ from urllib.parse import urlparse, parse_qs
 import time
 import streamlit.components.v1 as components
 from utils import COMMON_DATE_FORMATS,format_date,SYSTEM_PROMPT,AZURE_OPENAI_KEY,AZURE_OPENAI_ENDPOINT,AZURE_OPENAI_DEPLOYMENT,AZURE_OPENAI_API_VERSION
+from distutils.util import strtobool
 
-
+query_params = st.query_params
+DOWNLOAD =  query_params.get("DOWNLOAD")
+DOWNLOAD = bool(strtobool(DOWNLOAD))
 components.html(
     """
     <script>
@@ -315,9 +318,15 @@ def run_action(df, action):
             return {"type": "error", "message": f"plot requires valid 'x' column (e.g. 'Created Date'). Got: {x_col}"}
 
         # Parse x_col into datetime robustly using your helper
-        df2[x_col] = parse_datetime_col(df2, x_col)
-        df2 = df2.dropna(subset=[x_col])
-        df2["Month-Year"] = df2[x_col].dt.to_period("M").astype(str)
+# ✅ Only convert to datetime if it looks like a date column
+        if any(keyword in x_col.lower() for keyword in ["date", "time", "month", "year"]):
+            df2[x_col] = parse_datetime_col(df2, x_col)
+            df2 = df2.dropna(subset=[x_col])
+            df2["Month-Year"] = df2[x_col].dt.to_period("M").astype(str)
+        else:
+            # keep categorical columns like engagement status as-is
+            df2[x_col] = df2[x_col].astype(str).str.strip()
+
 
         # Apply date_range if present (respect dayfirst via parse_datetime_col)
         if date_range:
@@ -715,6 +724,9 @@ with st.sidebar:
                 st.session_state.loading = True
                 query_params = st.query_params
                 AUTH_ID = query_params.get("AUTH_ID", [None])[0] if isinstance(query_params.get("AUTH_ID"), list) else query_params.get("AUTH_ID")
+                DOWNLOAD =  query_params.get("DOWNLOAD")
+                print("mdscfmdskm", DOWNLOAD)
+                # DOWNLOAD = bool(strtobool(DOWNLOAD))
 
                 if not AUTH_ID:
                     st.error("❌  No Data found")
@@ -927,6 +939,15 @@ if df is not None:
     )
 
     # 🧠 Show full scrollable table (not truncated)
+    
+    if DOWNLOAD is not True:
+        st.markdown("""
+            <style>
+            [data-testid="stElementToolbar"] {
+                display: none !important;
+            }
+            </style>
+        """, unsafe_allow_html=True)
     st.dataframe(
         df,
         use_container_width=True,
@@ -987,6 +1008,14 @@ for h in st.session_state.history:
             if result["type"] == "error":
                 st.error(result["message"])
             elif result["type"] == "table":
+                if DOWNLOAD is not True:
+                    st.markdown("""
+                        <style>
+                        [data-testid="stElementToolbar"] {
+                            display: none !important;
+                        }
+                        </style>
+                    """, unsafe_allow_html=True)
                 st.dataframe(result["data"])
             elif result["type"] == "chart":
                 st.altair_chart(result["chart"], use_container_width=True)

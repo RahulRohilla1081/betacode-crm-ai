@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import io, json, os, textwrap
+import io, json, os, textwrap, re
 import altair as alt
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -11,6 +11,8 @@ import requests
 from urllib.parse import urlparse, parse_qs
 import time
 import streamlit.components.v1 as components
+from utils import COMMON_DATE_FORMATS,format_date,SYSTEM_PROMPT,AZURE_OPENAI_KEY,AZURE_OPENAI_ENDPOINT,AZURE_OPENAI_DEPLOYMENT,AZURE_OPENAI_API_VERSION
+
 
 components.html(
     """
@@ -42,13 +44,7 @@ components.html(
 )
 
 
-COMMON_DATE_FORMATS = [
-    "%d/%m/%Y %I:%M:%S %p",  # 24/10/2025 8:54:46 PM
-    "%d/%m/%Y %H:%M:%S",     # 24/10/2025 20:54:46
-    "%d/%m/%Y",              # 24/10/2025
-    "%Y-%m-%d %H:%M:%S",     # 2025-10-24 20:54:46
-    "%Y-%m-%d",              # 2025-10-24
-]
+
 
 st.set_page_config(page_title="BetaCode AI", page_icon="🤖", layout="wide")
 
@@ -61,6 +57,7 @@ hide_st_style = """
     </style>
 """
 st.markdown(hide_st_style, unsafe_allow_html=True)
+
 
 
 def parse_datetime_col(df, col):
@@ -103,10 +100,7 @@ def parse_datetime_col(df, col):
 # ---------------------
 load_dotenv()
 
-AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
+
 
 if not AZURE_OPENAI_KEY or not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_DEPLOYMENT:
     st.error("Please set all required Azure OpenAI environment variables before running.")
@@ -118,44 +112,6 @@ client = AzureOpenAI(
     api_version=AZURE_OPENAI_API_VERSION
 )
 
-SYSTEM_PROMPT = textwrap.dedent("""
-You are a helpful assistant that converts a user's natural-language request about a spreadsheet
-into a JSON "action" that a program will run. The JSON must be valid and *only* JSON (no prose).
-
-Rules:
-- The JSON must be a single object with an "action" key.
-- Allowed actions: "show_columns", "preview", "sort", "filter", "aggregate", "plot", "describe", "topk", "groupby".
-- Common fields:
-    - "column": column name (string)
-    - "columns": list of column names
-    - "order": "asc" or "desc"
-    - "plot_type": one of ["bar","line","scatter","hist","box"]
-    - "x", "y": column names for plotting
-    - "agg": for aggregate function ("sum","mean","count","min","max")
-    - "filters": list of { "column": ..., "op": "==|!=|>|<|>=|<=|contains", "value": ... }
-    - "k": integer for top-k
-    - "date_range": { "column": "...", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD" }
-
-Examples:
-
-1) Sort:
-{"action":"sort","column":"Revenue","order":"desc"}
-
-2) Bar plot of product vs sales:
-{"action":"plot","plot_type":"bar","x":"Product","y":"Sales"}
-
-3) Top 10 by Sales:
-{"action":"topk","column":"Sales","k":10,"order":"desc"}
-
-4) Filter by date:
-{"action":"filter","filters":[{"column":"Created Date","op":"month","value":"2025-10"}]}
-
-Important:
-- If the column the user mentions does not exist in the dataset, return an action with "action":"error" and "message":"column missing: <name>".
-- Dates should be formatted as "YYYY-MM-DD" in date_range and filters if the user gives date ranges.
-- Always output JSON ONLY (no explanation).
-""").strip()
-
 # ---------------------
 # Utility Functions
 # ---------------------
@@ -163,57 +119,66 @@ Important:
 def call_openai_to_get_action(system_prompt, user_prompt, columns):
     """
     Calls the model and ensures valid JSON for data actions.
-    If user asks general/greeting question, returns friendly text instead.
+    Handles greetings and thank-you messages gracefully.
     """
-    import json, re, os
-    from openai import AzureOpenAI
 
-    # Initialize Azure OpenAI client
-    
+    # Lowercase and strip punctuation for easier matching
+    cleaned = re.sub(r"[^\w\s]", "", user_prompt.lower()).strip()
 
-    # Detect general/greeting/help questions
-    if re.search(r"\b(hi|hello|hey|who\s+are\s+you|help|what\s+can\s+you)\b", user_prompt, re.I):
+    # Friendly/greeting detection
+    greeting_keywords = ["hi", "hello", "hey", "who are you", "help", "what can you"]
+    thank_keywords = ["thank", "thanks", "thank you"]
+
+    # ✅ Smarter thank-you detection
+    if (
+        any(k in cleaned for k in thank_keywords)
+        and not any(word in cleaned for word in ["data", "contact", "show", "list", "created", "meeting", "report", "count"])
+        and cleaned.endswith(("thank you", "thanks", "thankyou"))
+    ):
         friendly_response = (
-            "👋 Hi! I'm your **CRM AI Assistant** — powered by Azure OpenAI.\n\n"
-            "I can help you explore and analyze your CRM data with natural language. "
+            "😊 You're welcome! Glad I could help. "
+            "Let me know if you’d like me to explore or analyze anything else in your CRM data."
+        )
+        return json.dumps({"action": "text", "text": friendly_response})
+
+    # Friendly greeting detection (only if short and not data-related)
+    if len(cleaned.split()) <= 6 and any(k in cleaned for k in greeting_keywords):
+        friendly_response = (
+            "👋 Hi! I'm **Zoya AI** — your **CRM Assistant** powered by BetaCode.\n\n"
+            "I can help you explore and analyze your CRM data. "
             "For example, you can ask me:\n\n"
             "- 🔍 *Filter contacts created in October 2025*\n"
-            "- 📊 *Show top 5 clients by revenue*\n"
-            "- 📈 *Plot total sales by month*\n"
-            "- 🧩 *Summarize meeting outcomes for last quarter*\n\n"
+            "- 📊 *Give a bar graph for months vs. count of contacts created in that month*\n"
+            "- 📈 *Show how many hot contacts each CR Manager has added each month till date*\n"
+            "- 🧩 *Give the number of hot contacts*\n\n"
             "Just type what you need — I’ll take care of the rest!"
         )
-        # Return this as a simple string (no 'action' wrapper)
-        return json.dumps({
-            "action": "friendly",
-            "text": friendly_response
-        })
+        return json.dumps({"action": "text", "text": friendly_response})
 
-    # Otherwise, construct the prompt for the model
+    # Normal data-related prompt
     full_user_prompt = f"""
-    You are a CRM data assistant. Based on the user's request below, respond strictly in JSON format.
-    Available columns: {columns}.
-    User request: "{user_prompt}".
+    The available columns are: {columns}.
+    Now respond in JSON only based on the user's request: "{user_prompt}".
     """
 
+    response = client.chat.completions.create(
+        model=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": full_user_prompt}
+        ],
+    )
+
+    raw_text = response.choices[0].message.content.strip()
+
+    # Validate JSON output
     try:
-        response = client.chat.completions.create(
-            model=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": full_user_prompt}
-            ]
-        )
-
-        raw_text = response.choices[0].message.content.strip()
-
-        # Validate that the model returned valid JSON
         json.loads(raw_text)
         return raw_text
-
-    except Exception as e:
-        safe_json = {"action": "error", "message": f"Error while calling model: {str(e)}"}
+    except Exception:
+        safe_json = {"action": "error", "message": f"Invalid model output: {raw_text}"}
         return json.dumps(safe_json)
+
 def safe_load_json(text):
     try:
         return json.loads(text)
@@ -302,6 +267,8 @@ def run_action(df, action):
     act = action.get("action")
 
     # Handle friendly or greeting responses
+    if act in ["friendly", "text"]:
+        return {"type": "text", "text": action.get("text", "Hi there!")}
     if act == "friendly":
         return {"type": "text", "text": action.get("text", "Hi there!")}
 
@@ -544,13 +511,13 @@ def run_action(df, action):
             elif agg == "max":
                 result_value = df2[column].max()
             else:
-                return {"type": "error", "message": f"unsupported aggregation: {agg}"}
+                return {"Data not found"}
         except Exception as e:
-            return {"type": "error", "message": f"aggregation failed: {e}"}
+            return {"Data not found"}
 
         return {"type": "text", "text": f"{agg.title()} of '{column}' = {result_value}"}
 
-    return {"type":"error","message":f"unsupported action: {act}"}
+    return {"Data not found"}
 
 # ---------------------
 # Streamlit UI
@@ -748,6 +715,7 @@ with st.sidebar:
                 st.session_state.loading = True
                 query_params = st.query_params
                 AUTH_ID = query_params.get("AUTH_ID", [None])[0] if isinstance(query_params.get("AUTH_ID"), list) else query_params.get("AUTH_ID")
+                DOWNLOAD = query_params.get("DOWNLOAD", [None])[0] if isinstance(query_params.get("DOWNLOAD"), list) else query_params.get("DOWNLOAD`")
 
                 if not AUTH_ID:
                     st.error("❌  No Data found")
@@ -815,7 +783,7 @@ if st.session_state.get("analyse_clicked"):
 </div>
 """, unsafe_allow_html=True)
 
-                remove_fields = ["_id", "__v","IS_DELETED", "isRemoved", "ID", "crManager"]
+                remove_fields = ["_id", "__v","IS_DELETED", "isRemoved", "ID", "crManager","industry"]
 
         # ✅ Define rename mapping
                 rename_map = {
@@ -852,6 +820,8 @@ if st.session_state.get("analyse_clicked"):
 
                 cleaned_data = []
                 for item in data:
+                    item["CREATED_DATE"] = format_date(item["CREATED_DATE"])
+
                     if "engagementStatus" in item:
                         val = str(item["engagementStatus"])  # convert to string just in case
                         item["engagementStatus"] = engagement_map.get(val, val) 
@@ -958,11 +928,60 @@ if df is not None:
     )
 
     # 🧠 Show full scrollable table (not truncated)
-    st.dataframe(
-        df,
-        use_container_width=True,
-        height=400  # adjust for screen
-    )
+    # st.dataframe(
+    #     df,
+    #     use_container_width=True,
+    #     height=400  # adjust for screen
+    # )
+    import streamlit.components.v1 as components
+
+    def render_df_as_html(df, height=400, show_index=False):
+        """Render DataFrame as dark-themed scrollable HTML table (no download button)."""
+        html_table = df.to_html(index=show_index, classes="custom-table", na_rep="", escape=False)
+        html = f"""
+        <style>
+        .table-wrapper {{
+            width: 100%;
+            overflow: auto;
+            height: 600 px;
+            border-radius: 8px;
+            background-color: #0E1117;
+            border: 1px solid #28292E;
+        }}
+        table.custom-table {{
+            width: 100%;
+            border-collapse: collapse;
+            color: #E5E5E5;
+            font-family: "Source Sans Pro", "Segoe UI", sans-serif;
+            font-size: 14px;
+        }}
+        .custom-table thead th {{
+            position: sticky;
+            top: 0;
+            background-color: #1B1C24;
+            color: #FFFFFF;
+            text-align: left;
+            font-weight: 600;
+            padding: 8px 10px;
+            border: 1px solid #28292E;
+        }}
+      
+        .custom-table tbody tr:hover {{
+            background-color: #262B35;
+        }}
+        .custom-table td {{
+            padding: 8px 10px;
+            border: 1px solid #28292E;
+            white-space: nowrap;
+        }}
+        </style>
+        <div class="table-wrapper">{html_table}</div>
+        """
+        return html
+
+    components.html(render_df_as_html(df, height=320), height=340, scrolling=True)
+
+
 
     # 🧠 Input area for user prompt
     st.markdown("---")
@@ -992,6 +1011,7 @@ if df is not None:
     #         elif output["type"] == "chart":
     #             st.altair_chart(output["chart"], use_container_width=True)
 else:
+    st.session_state.history = []
     st.info("👈 Upload a file or click **Connect my CRM data source** to get started.")
     
 # if uploaded is not None:
@@ -1005,28 +1025,7 @@ else:
 if "history" not in st.session_state:
     st.session_state.history = []
 
-prompt = st.chat_input("Ask something about your data (e.g. 'filter contacts created in October 2025')")
-
-if prompt:
-    with st.spinner("Thinking..."):
-        try:
-            raw_action_text = call_openai_to_get_action(SYSTEM_PROMPT, prompt, list(df.columns))
-            st.session_state.history.append({"user": prompt, "model": raw_action_text})
-
-            # --- Detect non-JSON output (like "Hi, who are you") ---
-            if not raw_action_text.strip().startswith("{"):
-                result = {"type": "text", "text": raw_action_text}
-            else:
-                try:
-                    action = safe_load_json(raw_action_text)
-                    result = run_action(df, action)
-                except Exception as e:
-                    result = {"type": "error", "message": str(e)}
-
-        except Exception as e:
-            st.error(f"❌ Error while generating response: {e}")
-
-# --- Display conversation history ---
+# --- Display conversation history first ---
 for h in st.session_state.history:
     with st.chat_message("user"):
         st.write(h["user"])
@@ -1054,5 +1053,33 @@ for h in st.session_state.history:
                 st.write(response)
 
         except Exception as e:
-            st.warning(f"⚠️ Hello! Data could not be found — {e}")
+            st.warning(f"⚠️ Hello! Data could not be found")
 
+# --- Create placeholder for spinner just above input ---
+spinner_placeholder = st.empty()
+
+# --- Chat input ---
+prompt = st.chat_input("Ask something about your data (e.g. 'filter contacts created in October 2025')")
+
+if prompt:
+    with spinner_placeholder.container():  # spinner appears at the bottom
+        with st.spinner("Thinking..."):
+            try:
+                raw_action_text = call_openai_to_get_action(SYSTEM_PROMPT, prompt, list(df.columns))
+                st.session_state.history.append({"user": prompt, "model": raw_action_text})
+
+                # --- Detect non-JSON output (like "Hi, who are you") ---
+                if not raw_action_text.strip().startswith("{"):
+                    result = {"type": "text", "text": raw_action_text}
+                else:
+                    try:
+                        action = safe_load_json(raw_action_text)
+                        result = run_action(df, action)
+                    except Exception as e:
+                        result = {"type": "error", "message": str(e)}
+
+            except Exception as e:
+                st.error(f"❌ Error while generating response: {e}")
+
+    # trigger rerun so new message shows immediately
+    st.rerun()
